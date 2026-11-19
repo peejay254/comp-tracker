@@ -1,5 +1,7 @@
+// [UPDATED FILE] Only change: the challenges.css import below.
 import "./tracker.css";
 import "./styles.css";
+import "./challenges.css"; // [NEW] styles for the Challenges editor
 
 export const metadata = {
   title: "Computer Inspection Tracker",

@@ -1,8 +1,9 @@
+// [UPDATED FILE] Changes are marked with [CHANGED].
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/lib/mongodb";
 import { fail, guard, json } from "@/lib/http";
 import { SOFTWARE } from "@/lib/layouts";
-import { validateInspection } from "@/lib/validate";
+import { cleanIssues, validateInspection } from "@/lib/validate"; // [CHANGED] cleanIssues added
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,7 @@ const toRec = (d) => ({
   id: d._id, lab: d.lab, pc: d.pc, date: d.date, inspector: d.inspector, inspectorUsername: d.inspectorUsername, createdAt: d.createdAt,
   formatted: d.formatted, os: d.os, ram: d.ram, software: d.software, liveServer: d.liveServer,
   otherExtensions: d.otherExtensions, keyboard: d.keyboard, mouse: d.mouse,
+  issues: d.issues || [], // [CHANGED]
 });
 
 export async function GET(req) {
@@ -31,6 +33,7 @@ export async function POST(req) {
     formatted: b.formatted, os: b.os, ram: b.ram,
     software: Object.fromEntries(SOFTWARE.map(([k]) => [k, b.software[k]])),
     liveServer: b.liveServer, otherExtensions: (b.otherExtensions || "").trim(), keyboard: b.keyboard, mouse: b.mouse,
+    issues: cleanIssues(b.issues, true).issues, // [CHANGED]
     deletedAt: null, deletedBy: null,
   };
   const db = await getDb();

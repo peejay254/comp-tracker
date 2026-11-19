@@ -1,8 +1,17 @@
 "use client";
+/* [UPDATED FILE] Search this file for "[NEW]" and "[CHANGED]" to find every edit:
+   - import line, blankForm (issues), removed local isHealthy/problemsOf (now imported)
+   - STEPS / HINTS (6 steps), IssuesEditor + IssueList components
+   - InspectionForm: valid[], review[], Challenges step, error message
+   - pick(), draft resume + re-inspect initial values
+   - IssueList shown in the detail panel and History
+   - "of 5" -> STEPS.length, CSV "Challenges" column
+   - PDF export (exportPdf, Report buttons) */
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 /* ---------- Config ---------- */
-import { LAB_IDS, LAYOUTS, COMPUTERS, posOf, layoutText, OS_OPTIONS, RAM_OPTIONS, SOFTWARE, today } from "@/lib/layouts";
+// [CHANGED] extra imports: ISSUE_TYPES, ISSUE_MAP, SEVERITIES, isHealthy, problemsOf
+import { LAB_IDS, LAYOUTS, COMPUTERS, posOf, layoutText, OS_OPTIONS, RAM_OPTIONS, SOFTWARE, today, ISSUE_TYPES, ISSUE_MAP, SEVERITIES, isHealthy, problemsOf } from "@/lib/layouts";
 
 /* ---------- API client (session cookie is httpOnly; the server is the single source of truth) ---------- */
 async function request(method, path, body) {
@@ -27,6 +36,7 @@ const blankForm = () => ({
   otherExtensions: "",
   keyboard: null,
   mouse: null,
+  issues: [], // [NEW]
 });
 
 const isComplete = (r) =>
@@ -34,17 +44,7 @@ const isComplete = (r) =>
   Object.values(r.software).every((v) => v !== null) &&
   r.liveServer !== null && r.keyboard !== null && r.mouse !== null;
 
-const isHealthy = (r) =>
-  r.formatted && Object.values(r.software).every(Boolean) &&
-  r.liveServer && r.keyboard && r.mouse;
-
-const problemsOf = (r) => [
-  !r.formatted && "Not formatted",
-  ...SOFTWARE.filter(([k]) => !r.software[k]).map(([, n]) => `${n} missing`),
-  !r.liveServer && "Live Server missing",
-  !r.keyboard && "Keyboard faulty",
-  !r.mouse && "Mouse faulty",
-].filter(Boolean);
+// [CHANGED] isHealthy and problemsOf were removed from here: they now come from "@/lib/layouts"
 
 const shortPos = (lab, pc) => {
   const c = COMPUTERS[lab]?.find((x) => x.pc === pc);
@@ -85,14 +85,75 @@ function Modal({ title, onClose, children }) {
   );
 }
 
-const STEPS = ["Basics", "System", "Software", "Hardware", "Review"];
+// [CHANGED] 6 steps now (Challenges added before Review)
+const STEPS = ["Basics", "System", "Software", "Hardware", "Challenges", "Review"];
 const HINTS = [
   "Choose the date you did the inspection. “Formatted” means the computer was wiped and reinstalled.",
   "Windows: right-click Start → System. Linux Mint: Menu → System Info. RAM is shown there too.",
   "Look for each program in the Start menu / application menu. Pick Yes only if it opens.",
   "Test them: type something and move the mouse. Choose No if either one is faulty or missing.",
+  "Hit a problem while working on this machine (power, GRUB, RAM, disk…)? Record it here so it can be fixed. No problems? Just press Next.",
   "Check every answer. You can go back to change anything before saving.",
 ];
+
+/* ===== [NEW] Challenges editor ===== */
+const SEV_LABEL = Object.fromEntries(SEVERITIES.map((s) => [s.key, s.label]));
+
+function IssuesEditor({ value, onChange }) {
+  const has = (k) => value.some((i) => i.type === k);
+  const toggle = (k) => onChange(has(k) ? value.filter((i) => i.type !== k) : [...value, { type: k, severity: "major", note: "" }]);
+  const patch = (k, p) => onChange(value.map((i) => (i.type === k ? { ...i, ...p } : i)));
+  const quick = (i, text) => patch(i.type, { note: (i.note.trim() ? `${i.note.trim()}\n${text}` : text).slice(0, 500) });
+  return (
+    <div className="issues">
+      <p className="hint"><b>Tap everything that went wrong with this machine:</b></p>
+      <div className="issue-chips" role="group" aria-label="Problem types">
+        {ISSUE_TYPES.map((t) => (
+          <button key={t.key} type="button" aria-pressed={has(t.key)} className={"issue-chip" + (has(t.key) ? " on" : "")} onClick={() => toggle(t.key)}>
+            <span aria-hidden="true">{t.icon}</span> {t.label}
+          </button>
+        ))}
+      </div>
+      {!value.length && <p className="muted issue-empty">No problems recorded. Press Next to continue.</p>}
+      {value.map((i) => {
+        const t = ISSUE_MAP[i.type];
+        return (
+          <div key={i.type} className="issue-card">
+            <div className="issue-head">
+              <b>{t.icon} {t.label}</b>
+              <button type="button" className="btn ghost sm" onClick={() => toggle(i.type)} aria-label={`Remove ${t.label}`}>Remove</button>
+            </div>
+            <div className="seg sev" role="group" aria-label="How serious is it?">
+              {SEVERITIES.map((s) => (
+                <button key={s.key} type="button" title={s.desc} className={i.severity === s.key ? `on ${s.key}` : ""} onClick={() => patch(i.type, { severity: s.key })}>{s.label} · {s.desc}</button>
+              ))}
+            </div>
+            <textarea rows={4} maxLength={500} value={i.note} onChange={(e) => patch(i.type, { note: e.target.value })}
+              placeholder={i.type === "other" ? "Describe the problem (required)…" : "What happened? What did you see or try? What is needed to fix it?"}
+              aria-label={`Notes about ${t.label}`} />
+            <div className="issue-foot">
+              <div className="quick">{(t.quick || []).map((q) => <button key={q} type="button" onClick={() => quick(i, q)}>+ {q}</button>)}</div>
+              <span className="count">{i.note.length}/500</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function IssueList({ issues }) {
+  if (!issues?.length) return null;
+  return (
+    <ul className="issue-list">
+      {issues.map((i) => {
+        const t = ISSUE_MAP[i.type];
+        return <li key={i.type}><span className={"sev-tag " + i.severity}>{SEV_LABEL[i.severity]}</span><b>{t?.icon} {t?.label || i.type}</b>{i.note && <span className="issue-note">{i.note}</span>}</li>;
+      })}
+    </ul>
+  );
+}
+/* ===== end [NEW] ===== */
 
 function InspectionForm({ lab, pc, initial, initialStep, banner, who, onSave, onCancel, onDraft }) {
   const [f, setF] = useState(initial);
@@ -101,11 +162,13 @@ function InspectionForm({ lab, pc, initial, initialStep, banner, who, onSave, on
   const set = (patch) => setF((p) => ({ ...p, ...patch }));
   const sw = Object.values(f.software);
 
+  // [CHANGED] one validation entry per step (6)
   const valid = [
     !!f.date && f.formatted !== null,
     !!f.os && !!f.ram,
     sw.every((v) => v !== null) && f.liveServer !== null,
     f.keyboard !== null && f.mouse !== null,
+    f.issues.every((i) => i.type !== "other" || i.note.trim()),
     true,
   ];
 
@@ -122,6 +185,7 @@ function InspectionForm({ lab, pc, initial, initialStep, banner, who, onSave, on
     ...SOFTWARE.map(([k, n]) => [n, yn(f.software[k])]),
     ["Live Server", yn(f.liveServer)], ["Other extensions", f.otherExtensions || "None"],
     ["Keyboard", yn(f.keyboard)], ["Mouse", yn(f.mouse)],
+    ["Challenges", f.issues.length ? f.issues.map((i) => `${ISSUE_MAP[i.type].label} (${SEV_LABEL[i.severity]})`).join(", ") : "None"], // [NEW]
   ];
 
   return (
@@ -172,7 +236,11 @@ function InspectionForm({ lab, pc, initial, initialStep, banner, who, onSave, on
           <YesNo name="ms" label="Is the mouse working?" value={f.mouse} onChange={(v) => set({ mouse: v })} />
         </>)}
 
-        {step === 4 && (<>
+        {/* [NEW] Challenges step */}
+        {step === 4 && <IssuesEditor value={f.issues} onChange={(issues) => set({ issues })} />}
+
+        {/* [CHANGED] Review is now step 5 (was 4) */}
+        {step === 5 && (<>
           <p className="accountable">🔒 This inspection will be recorded under <b>{who}</b>, with the date and time you press Save.</p>
           <dl className="review">
             {review.map(([k, v]) => (<div key={k}><dt>{k}</dt><dd className={v === "No" ? "neg" : ""}>{v}</dd></div>))}
@@ -180,7 +248,8 @@ function InspectionForm({ lab, pc, initial, initialStep, banner, who, onSave, on
         )}
       </div>
 
-      {touched && !valid[step] && <p className="error" role="alert">Please answer every question on this step to continue.</p>}
+      {/* [CHANGED] step-specific error text */}
+      {touched && !valid[step] && <p className="error" role="alert">{step === 4 ? "Describe the “Other” problem, or remove it." : "Please answer every question on this step to continue."}</p>}
 
       <div className="actions between">
         <button type="button" className="btn" onClick={() => (step === 0 ? onCancel() : go(step - 1))}>{step === 0 ? "Cancel" : "← Back"}</button>
@@ -237,8 +306,9 @@ function FloorPlan({ lab, latest, draftMap, filter, sel, onSelect }) {
   );
 }
 
+// [CHANGED] issues added
 const pick = (f) => ({ date: f.date, formatted: f.formatted, os: f.os, ram: f.ram, software: f.software,
-  liveServer: f.liveServer, otherExtensions: f.otherExtensions, keyboard: f.keyboard, mouse: f.mouse });
+  liveServer: f.liveServer, otherExtensions: f.otherExtensions, keyboard: f.keyboard, mouse: f.mouse, issues: f.issues });
 
 function MiniPlan({ lab, latest }) {
   return (
@@ -298,7 +368,7 @@ function Welcome({ user, records, drafts, latest, onInspect }) {
           <ol>
             <li><b>Pick a lab</b> below.</li>
             <li><b>Tap a computer</b> on the floor plan — it matches where it sits in the room.</li>
-            <li><b>Answer 5 short steps.</b> You can press “Save &amp; finish later” at any time.</li>
+            <li><b>Answer {STEPS.length} short steps.</b> You can press “Save &amp; finish later” at any time.</li>{/* [CHANGED] was hardcoded 5 */}
           </ol>
           <button className="btn ghost sm" onClick={dismiss}>Got it — hide this guide</button>
         </div>
@@ -353,7 +423,8 @@ function ActivityLog() {
   );
 }
 
-function Report({ latest, onOpen, drafts, records }) {
+// [CHANGED] signature: canExport, onPdf added
+function Report({ latest, onOpen, drafts, records, canExport, onPdf }) {
   const rows = LAB_IDS.map((lab) => {
     const issues = [], pending = [];
     let ok = 0;
@@ -382,7 +453,11 @@ function Report({ latest, onOpen, drafts, records }) {
     <div className="report">
       <div className="report-head">
         <div><h2>Management summary</h2><p className="muted">Generated {new Date().toLocaleString()} · based on the latest inspection of each computer</p></div>
-        <button className="btn primary" onClick={() => window.print()}>Print / Save as PDF</button>
+        {/* [CHANGED] PDF button for all labs (admin + viewer) */}
+        <div className="actions">
+          {canExport && <button className="btn primary" onClick={() => onPdf(null)}>Download PDF · all labs</button>}
+          <button className="btn" onClick={() => window.print()}>Print</button>
+        </div>
       </div>
 
       <section className="stats five">
@@ -402,7 +477,11 @@ function Report({ latest, onOpen, drafts, records }) {
             <td className="plan-cell"><MiniPlan lab={r.lab} latest={latest} /></td>
             <td>{r.inspected}/{r.total}<div className="bar"><i style={{ width: `${(r.inspected / r.total) * 100}%` }} /></div></td>
             <td>{r.ok}</td><td className={r.issues.length ? "warn" : ""}>{r.issues.length}</td><td>{r.pending.length}</td>
-            <td className="right"><button className="btn sm" onClick={() => onOpen(r.lab, null)}>Open plan</button></td>
+            {/* [CHANGED] per-lab PDF button */}
+            <td className="right">
+              <button className="btn sm" onClick={() => onOpen(r.lab, null)}>Open plan</button>
+              {canExport && <button className="btn sm" onClick={() => onPdf(r.lab)}>PDF</button>}
+            </td>
           </tr>))}</tbody>
       </table></div>
 
@@ -440,7 +519,7 @@ function Report({ latest, onOpen, drafts, records }) {
       {drafts.length ? drafts.map((d) => (
         <div key={d.id} className="pending-row">
           <b>Lab {d.lab}</b> <button className="chip" onClick={() => onOpen(d.lab, d.pc)}>{shortPos(d.lab, d.pc)}</button>
-          <span className="muted"> step {d.step + 1} of 5 · {d.inspector} · {new Date(d.updatedAt).toLocaleString()}</span>
+          <span className="muted"> step {d.step + 1} of {STEPS.length} · {d.inspector} · {new Date(d.updatedAt).toLocaleString()}</span>{/* [CHANGED] */}
         </div>)) : <p className="muted">No unfinished inspections.</p>}
 
       <h3>Not yet inspected</h3>
@@ -594,11 +673,14 @@ export default function Tracker({ user }) {
   });
 
   const exportCsv = () => {
-    const head = ["Lab", "Computer", "Date", "Formatted", "OS", "RAM", ...SOFTWARE.map(([, n]) => n), "Live Server", "Other extensions", "Keyboard", "Mouse", "Inspected by", "Recorded at"];
+    // [CHANGED] "Challenges" column added before "Inspected by"
+    const head = ["Lab", "Computer", "Date", "Formatted", "OS", "RAM", ...SOFTWARE.map(([, n]) => n), "Live Server", "Other extensions", "Keyboard", "Mouse", "Challenges", "Inspected by", "Recorded at"];
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const rows = records.slice().sort((a, b) => a.lab - b.lab || a.pc - b.pc || a.date.localeCompare(b.date)).map((r) => [
       `Lab ${r.lab}`, posOf(r.lab, r.pc), r.date, yn(r.formatted), r.os, r.ram,
-      ...SOFTWARE.map(([k]) => yn(r.software[k])), yn(r.liveServer), r.otherExtensions, yn(r.keyboard), yn(r.mouse), r.inspector, new Date(r.createdAt).toLocaleString(),
+      ...SOFTWARE.map(([k]) => yn(r.software[k])), yn(r.liveServer), r.otherExtensions, yn(r.keyboard), yn(r.mouse),
+      (r.issues || []).map((i) => `${ISSUE_MAP[i.type]?.label} [${i.severity}]${i.note ? `: ${i.note}` : ""}`).join(" | "), // [NEW]
+      r.inspector, new Date(r.createdAt).toLocaleString(),
     ]);
     const csv = [head, ...rows].map((r) => r.map(esc).join(",")).join("\n");
     download(csv, `inspections-${today()}.csv`, "text/csv");
@@ -609,6 +691,15 @@ export default function Tracker({ user }) {
     download(JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), records }, null, 2),
       `inspection-backup-${today()}.json`, "application/json");
     notify("Backup downloaded");
+  };
+
+  // [NEW] PDF export: one lab (labId) or all labs (null). The PDF library loads only when needed.
+  const exportPdf = async (labId) => {
+    try {
+      const { labPdf, allLabsPdf } = await import("@/lib/pdf");
+      labId ? labPdf(labId, latest, { by: user.name }) : allLabsPdf(latest, { by: user.name });
+      notify("PDF downloaded");
+    } catch (e) { console.error(e); notify("Could not create the PDF", "error"); }
   };
 
 
@@ -645,7 +736,8 @@ export default function Tracker({ user }) {
         <button className={page === "report" ? "on" : ""} onClick={() => setPage("report")}>Management report</button>
       </nav>
 
-      {page === "report" ? <Report latest={latest} onOpen={openComputer} drafts={drafts} records={records} /> : !lab ? (
+      {/* [CHANGED] Report gets canExport + onPdf (admin and viewer can export; inspectors cannot) */}
+      {page === "report" ? <Report latest={latest} onOpen={openComputer} drafts={drafts} records={records} canExport={user.role !== "inspector"} onPdf={exportPdf} /> : !lab ? (
         <>
           <Welcome user={user} records={records} drafts={drafts} latest={latest} onInspect={(l, pc) => { openComputer(l, pc); setForm({ lab: l, pc }); }} />
           <section className="stats">
@@ -705,13 +797,14 @@ export default function Tracker({ user }) {
                       <div>
                         <h3>{posOf(lab, c.pc)} <Badge rec={r} /></h3>
                         <p className="muted">{r ? <>Inspected by <b>{r.inspector || "unknown"}</b> on {r.date} · recorded {new Date(r.createdAt).toLocaleString()} · {r.os} · {r.ram}</> : "No inspection recorded yet."}</p>
-                        {dr && <p className="draft-note">✎ Draft in progress · {dr.inspector} · step {dr.step + 1} of 5 · saved {new Date(dr.updatedAt).toLocaleString()}</p>}
+                        {dr && <p className="draft-note">✎ Draft in progress · {dr.inspector} · step {dr.step + 1} of {STEPS.length} · saved {new Date(dr.updatedAt).toLocaleString()}</p>}{/* [CHANGED] */}
                         {r && (
                           <ul className="checks">
                             {[["Formatted", r.formatted], ...SOFTWARE.map(([k, n]) => [n, r.software[k]]), ["Live Server", r.liveServer], ["Keyboard", r.keyboard], ["Mouse", r.mouse]].map(([n, v]) => (
                               <li key={n} className={v ? "y" : "n"}>{v ? "✔" : "✘"} {n}</li>))}
                           </ul>
                         )}
+                        {r && <IssueList issues={r.issues} />}{/* [NEW] */}
                       </div>
                     )}
                     <div className="actions">
@@ -759,11 +852,13 @@ export default function Tracker({ user }) {
             {...(() => {
               const key = `${form.lab}-${form.pc}`, dr = draftMap[key], r = latest[key], b = blankForm();
               if (dr) return {
-                initial: { ...b, ...dr.data, date: dr.data.date || b.date, software: { ...b.software, ...dr.data.software } },
+                // [CHANGED] issues restored from the draft
+                initial: { ...b, ...dr.data, date: dr.data.date || b.date, software: { ...b.software, ...dr.data.software }, issues: dr.data.issues || [] },
                 initialStep: dr.step,
                 banner: `Resuming a draft saved by ${dr.inspector} on ${new Date(dr.updatedAt).toLocaleString()}`,
               };
-              return { initial: r ? { ...r, date: today() } : b, initialStep: 0 };
+              // [CHANGED] a re-inspection starts with the previous problems; remove the ones that were fixed
+              return { initial: r ? { ...r, date: today(), issues: r.issues || [] } : b, initialStep: 0 };
             })()} />
         </Modal>
       )}
@@ -780,6 +875,7 @@ export default function Tracker({ user }) {
                 <p>{SOFTWARE.map(([k, n]) => `${n}: ${yn(r.software[k])}`).join(" · ")}</p>
                 <p>Live Server: {yn(r.liveServer)} · Other: {r.otherExtensions || "none"}</p>
                 <p>Keyboard: {yn(r.keyboard)} · Mouse: {yn(r.mouse)}</p>
+                <IssueList issues={r.issues} />{/* [NEW] */}
               </div>
             ))}
           {!records.some((r) => r.lab === history.lab && r.pc === history.pc) && <p className="muted">No records yet.</p>}
@@ -803,5 +899,3 @@ export default function Tracker({ user }) {
     </div>
   );
 }
-
-/* ---------- Styles ---------- */
