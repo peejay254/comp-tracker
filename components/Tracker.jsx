@@ -7,11 +7,13 @@
    - IssueList shown in the detail panel and History
    - "of 5" -> STEPS.length, CSV "Challenges" column
    - PDF export (exportPdf, Report buttons) */
-import { useCallback, useEffect, useMemo, useState } from "react";
+/* [v3] Admin tools added: "Reset to default" (computer details panel + list), "Edit layout" (LayoutEditor: drag & drop,
+   add / remove computers), floor plans now loaded from /api/layouts, "reset" events in the activity log. Search "[v3". */
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react"; // [v3 CHANGED] Fragment added
 
 /* ---------- Config ---------- */
 // [CHANGED] extra imports: ISSUE_TYPES, ISSUE_MAP, SEVERITIES, isHealthy, problemsOf
-import { LAB_IDS, LAYOUTS, COMPUTERS, posOf, layoutText, OS_OPTIONS, RAM_OPTIONS, SOFTWARE, today, ISSUE_TYPES, ISSUE_MAP, SEVERITIES, isHealthy, problemsOf } from "@/lib/layouts";
+import { LAB_IDS, LAYOUTS, COMPUTERS, posOf, layoutText, OS_OPTIONS, RAM_OPTIONS, SOFTWARE, today, ISSUE_TYPES, ISSUE_MAP, SEVERITIES, isHealthy, problemsOf, applyLayouts, buildComputers } from "@/lib/layouts"; // [v3 CHANGED] applyLayouts, buildComputers
 
 /* ---------- API client (session cookie is httpOnly; the server is the single source of truth) ---------- */
 async function request(method, path, body) {
@@ -154,6 +156,107 @@ function IssueList({ issues }) {
   );
 }
 /* ===== end [NEW] ===== */
+
+/* ===== [v3 NEW] Layout editor (admin only): drag & drop to rearrange, add / remove computers ===== */
+const snap = (secs) => JSON.stringify(secs.map((s) => [s.cols, s.pcs]));
+
+function LayoutEditor({ lab, latest, onClose, onChanged, notify }) {
+  const fresh = () => LAYOUTS[lab].map((s) => ({ name: s.name, cols: s.cols, pcs: [...s.pcs] }));
+  const [secs, setSecs] = useState(fresh);   // what the admin is arranging now
+  const [saved, setSaved] = useState(fresh); // what is stored on the server
+  const [sel, setSel] = useState(null);      // tapped computer (tap-then-tap swap, for touch screens)
+  const [drag, setDrag] = useState(null);
+  const [over, setOver] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const dirty = snap(secs) !== snap(saved);
+  const at = Object.fromEntries(buildComputers(secs).map((c) => [c.pc, c]));
+  const status = (pc) => { const r = latest[`${lab}-${pc}`]; return !r ? "none" : isHealthy(r) ? "ok" : "bad"; };
+
+  const swap = (a, b) => { if (a !== b) setSecs((ss) => ss.map((s) => ({ ...s, pcs: s.pcs.map((p) => (p === a ? b : p === b ? a : p)) }))); };
+  const moveToEnd = (pc, si) => setSecs((ss) => ss.map((s, i) => ({ ...s, pcs: [...s.pcs.filter((p) => p !== pc), ...(i === si ? [pc] : [])] })));
+  const setCols = (si, cols) => setSecs((ss) => ss.map((s, i) => (i === si ? { ...s, cols } : s)));
+  const tap = (pc) => { if (sel === null) setSel(pc); else if (sel === pc) setSel(null); else { swap(sel, pc); setSel(null); } };
+  const endDrag = () => { setDrag(null); setOver(null); };
+
+  const call = async (fn) => { setBusy(true); try { await fn(); } catch (e) { notify(e.message, "error"); } setBusy(false); };
+  const add = (si) => call(async () => {
+    const r = await api.post(`/layouts/${lab}`, { action: "add", section: si });
+    const put = (ss) => ss.map((s, i) => (i === si ? { ...s, pcs: [...s.pcs, r.pc] } : s));
+    setSecs(put); setSaved(put); setSel(r.pc);
+    notify(`Computer #${r.pc} added`); onChanged();
+  });
+  const remove = () => call(async () => {
+    const pc = sel;
+    await api.post(`/layouts/${lab}`, { action: "remove", pc });
+    const drop = (ss) => ss.map((s) => ({ ...s, pcs: s.pcs.filter((p) => p !== pc) }));
+    setSecs(drop); setSaved(drop); setSel(null);
+    notify(`Computer #${pc} removed`); onChanged();
+  });
+  const save = () => call(async () => {
+    await api.put(`/layouts/${lab}`, { sections: secs.map((s) => ({ cols: s.cols, pcs: s.pcs })) });
+    setSaved(secs); await onChanged(); notify("Layout saved"); onClose();
+  });
+  const close = () => { if (!dirty || window.confirm("Discard your unsaved layout changes?")) onClose(); };
+
+  return (
+    <div>
+      <div className="edit-bar">
+        <div>
+          <b>Editing the Lab {lab} layout</b>
+          <p className="muted">Drag a computer onto another to swap places, or tap one and then tap another. Inspection data stays with the computer when it moves. Nothing changes until you press Save.</p>
+        </div>
+        <div className="actions">
+          {sel !== null && <button className="btn danger" onClick={remove} disabled={busy}>Remove #{sel}</button>}
+          <button className="btn" onClick={close}>Cancel</button>
+          <button className="btn primary" onClick={save} disabled={!dirty || busy}>Save layout</button>
+        </div>
+      </div>
+      <div className="room edit-room">
+        <div className="screen">FRONT · SCREEN</div>
+        <div className="sections">
+          {secs.map((sec, si) => (
+            <Fragment key={si}>
+              {si > 0 && <div className="walkway"><span>WALKWAY</span></div>}
+              <div className="section" style={{ flex: sec.cols }}>
+                {sec.name && <div className="sec-name">{sec.name} section</div>}
+                <label className="cols-ctl">Columns
+                  <select value={sec.cols} onChange={(e) => setCols(si, Number(e.target.value))}>
+                    {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+                <div className="pcs" style={{ gridTemplateColumns: `repeat(${sec.cols}, minmax(0, 1fr))` }}>
+                  {sec.pcs.map((pc) => (
+                    <button key={pc} type="button" draggable aria-pressed={sel === pc}
+                      aria-label={`Computer ${pc}, row ${at[pc].row} column ${at[pc].col}`}
+                      className={`pc ${status(pc)}${sel === pc ? " sel" : ""}${drag === pc ? " dragging" : ""}${over === pc && drag !== pc ? " over" : ""}`}
+                      onClick={() => tap(pc)}
+                      onDragStart={(e) => { setDrag(pc); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(pc)); }}
+                      onDragEnd={endDrag}
+                      onDragOver={(e) => { if (drag !== null) { e.preventDefault(); setOver(pc); } }}
+                      onDrop={(e) => { e.preventDefault(); e.stopPropagation(); if (drag !== null) swap(drag, pc); endDrag(); }}>
+                      <span className="pc-id">#{pc}</span>
+                      <span className="pc-pos">R{at[pc].row}·C{at[pc].col}</span>
+                    </button>
+                  ))}
+                </div>
+                <button type="button" className={"drop-end" + (over === `end${si}` ? " over" : "")}
+                  onClick={() => { if (sel !== null) { moveToEnd(sel, si); setSel(null); } }}
+                  onDragOver={(e) => { if (drag !== null) { e.preventDefault(); setOver(`end${si}`); } }}
+                  onDrop={(e) => { e.preventDefault(); if (drag !== null) moveToEnd(drag, si); endDrag(); }}>
+                  Drop here (or tap a computer, then tap here) to move it to the end of this section
+                </button>
+                <button type="button" className="btn sm add-pc" onClick={() => add(si)} disabled={busy}>+ Add computer</button>
+              </div>
+            </Fragment>
+          ))}
+        </div>
+        <div className="back">BACK OF LAB</div>
+        <p className="muted orient">Tiles show the computer number (#) and its new row and column. Colours show the current inspection status.</p>
+      </div>
+    </div>
+  );
+}
+/* ===== end [v3 NEW] ===== */
 
 function InspectionForm({ lab, pc, initial, initialStep, banner, who, onSave, onCancel, onDraft }) {
   const [f, setF] = useState(initial);
@@ -415,6 +518,8 @@ function ActivityLog() {
           <li key={i}>
             {e.type === "inspected"
               ? <><b>{e.who}</b> inspected Lab {e.lab} · {posOf(e.lab, e.pc)} <span className={"badge " + (e.ok ? "ok" : "bad")}>{e.ok ? "All good" : "Needs attention"}</span></>
+              : e.type === "reset" /* [v3 NEW] */
+              ? <>↺ <b>{e.who}</b> reset Lab {e.lab} · {posOf(e.lab, e.pc)} to its default state <span className="muted">(cleared {e.by}’s inspection)</span></>
               : <>🗑 <b>{e.who}</b> deleted {e.by === e.who ? "their own" : `${e.by}’s`} inspection of Lab {e.lab} · {posOf(e.lab, e.pc)}</>}
             <span className="muted"> · {ago(e.at)}</span>
           </li>))}</ul>
@@ -575,7 +680,7 @@ export default function Tracker({ user }) {
   const [syncErr, setSyncErr] = useState(false);
   const [syncedAt, setSyncedAt] = useState(null);
   const sync = useCallback(async () => {
-    try { const [recs, drs] = await Promise.all([api.get("/inspections"), api.get("/drafts")]); setRecords(recs); setDrafts(drs); setSyncErr(false); setSyncedAt(new Date()); }
+    try { const [recs, drs, lays] = await Promise.all([api.get("/inspections"), api.get("/drafts"), api.get("/layouts")]); applyLayouts(lays); /* [v3 CHANGED] floor plans come from the server */ setRecords(recs); setDrafts(drs); setSyncErr(false); setSyncedAt(new Date()); }
     catch { setSyncErr(true); }
     setLoaded(true);
   }, []);
@@ -593,9 +698,10 @@ export default function Tracker({ user }) {
   const [history, setHistory] = useState(null); // {lab, pc}
   const [filter, setFilter] = useState("all");
   const [view, setView] = useState("map"); // "map" | "list"
+  const [editing, setEditing] = useState(false); // [v3 NEW] admin layout editor open
   const [page, setPage] = useState("labs"); // "labs" | "report"
   const readOnly = user.role === "viewer"; // enforced by the server too
-  const openComputer = (l, pc) => { setPage("labs"); setLab(l); setView("map"); setFilter("all"); setSel(pc); };
+  const openComputer = (l, pc) => { setPage("labs"); setLab(l); setView("map"); setFilter("all"); setSel(pc); setEditing(false); };
   const [sel, setSel] = useState(null); // selected computer number
   const [toast, setToast] = useState(null);
   const [ask, setAsk] = useState(null); // {title, text, action, onYes}
@@ -621,7 +727,7 @@ export default function Tracker({ user }) {
 
   const labStats = (l) => {
     let inspected = 0, issues = 0;
-    for (let pc = 1; pc <= sizeOf(l); pc++) {
+    for (const { pc } of COMPUTERS[l]) { // [v3 CHANGED] computer numbers are no longer always 1..N
       const r = latest[`${l}-${pc}`];
       if (r) { inspected++; if (!isHealthy(r)) issues++; }
     }
@@ -672,6 +778,21 @@ export default function Tracker({ user }) {
     },
   });
 
+  // [v3 NEW] Admin: put a computer back to "Not inspected" (e.g. details were entered on the wrong computer)
+  const resetComputer = (l, pc) => setAsk({
+    title: "Reset this computer?",
+    text: `${posOf(l, pc)} in Lab ${l} goes back to “Not inspected”. Its inspection records and any unfinished draft are cleared (the reset stays in the activity log). Use this when details were entered on the wrong computer.`,
+    action: "Reset",
+    onYes: async () => {
+      try {
+        await api.post(`/computers/${l}-${pc}/reset`, {});
+        setRecords((rs) => rs.filter((r) => !(r.lab === l && r.pc === pc)));
+        setDrafts((ds) => ds.filter((d) => d.id !== `${l}-${pc}`));
+        notify(`${posOf(l, pc)} reset to default`);
+      } catch (e) { notify(e.message, "error"); }
+    },
+  });
+
   const exportCsv = () => {
     // [CHANGED] "Challenges" column added before "Inspected by"
     const head = ["Lab", "Computer", "Date", "Formatted", "OS", "RAM", ...SOFTWARE.map(([, n]) => n), "Live Server", "Other extensions", "Keyboard", "Mouse", "Challenges", "Inspected by", "Recorded at"];
@@ -703,7 +824,7 @@ export default function Tracker({ user }) {
   };
 
 
-  const pcs = lab ? Array.from({ length: sizeOf(lab) }, (_, i) => i + 1) : [];
+  const pcs = lab ? COMPUTERS[lab].map((c) => c.pc) : []; // [v3 CHANGED] display order
   const shown = pcs.filter((pc) => {
     const r = latest[`${lab}-${pc}`];
     return filter === "all" || (filter === "none" && !r) || (filter.startsWith("by:") && r?.inspector === filter.slice(3)) || (filter === "issues" && r && !isHealthy(r)) || (filter === "draft" && !!draftMap[`${lab}-${pc}`]);
@@ -723,7 +844,7 @@ export default function Tracker({ user }) {
           </div>
         </div>
         <div className="actions">
-          {lab && page === "labs" && <button className="btn" onClick={() => { setLab(null); setFilter("all"); }}>← All labs</button>}
+          {lab && page === "labs" && <button className="btn" onClick={() => { setLab(null); setFilter("all"); setEditing(false); }}>← All labs</button>}
           {user.role === "admin" && <a className="btn" href="/admin">Users</a>}
           <button className="btn" onClick={() => setAccount(true)} title="Change password">{user.name} · {user.role}</button>
           <button className="btn" onClick={logout}>Sign out</button>
@@ -768,7 +889,7 @@ export default function Tracker({ user }) {
             <h2>Lab {lab}</h2>
             <div className="seg">
               <button className={view === "map" ? "on" : ""} onClick={() => setView("map")}>Floor plan</button>
-              <button className={view === "list" ? "on" : ""} onClick={() => setView("list")}>List</button>
+              <button className={view === "list" ? "on" : ""} onClick={() => { setView("list"); setEditing(false); }}>List</button>
             </div>
             <select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter computers">
               <option value="all">All computers</option>
@@ -780,8 +901,11 @@ export default function Tracker({ user }) {
                 {[...new Set(records.map((r) => r.inspector).filter(Boolean))].sort().map((n) => <option key={n} value={`by:${n}`}>{n}</option>)}
               </optgroup>
             </select>
+            {user.role === "admin" && view === "map" && !editing && <button className="btn" onClick={() => { setSel(null); setEditing(true); }}>✥ Edit layout</button>}{/* [v3 NEW] */}
           </div>
-          {view === "map" ? (
+          {view === "map" && editing ? (
+            <LayoutEditor lab={lab} latest={latest} onClose={() => setEditing(false)} onChanged={sync} notify={notify} />
+          ) : view === "map" ? (
             <>
               <FloorPlan lab={lab} latest={latest} draftMap={draftMap} filter={filter} sel={sel} onSelect={setSel} />
               {(() => {
@@ -811,6 +935,7 @@ export default function Tracker({ user }) {
                       {nextPc && <button className="btn" onClick={() => setSel(nextPc)}>Next uninspected →</button>}
                       {c && r && <button className="btn" onClick={() => setHistory({ lab, pc: c.pc })}>History</button>}
                       {dr && !readOnly && <button className="btn" onClick={() => discardDraft(dr)}>Discard draft</button>}
+                      {c && (r || dr) && user.role === "admin" && <button className="btn danger" onClick={() => resetComputer(lab, c.pc)}>Reset to default</button>}{/* [v3 NEW] */}
                       {c && !readOnly && <button className="btn primary" onClick={() => setForm({ lab, pc: c.pc })}>{dr ? "Continue draft" : r ? "Re-inspect" : "Inspect"}</button>}
                     </div>
                   </div>
@@ -834,6 +959,7 @@ export default function Tracker({ user }) {
                       <td className="right">
                         {!readOnly && <button className="btn primary sm" onClick={() => setForm({ lab, pc })}>{draftMap[`${lab}-${pc}`] ? "Continue" : r ? "Re-inspect" : "Inspect"}</button>}
                         {r && <button className="btn sm" onClick={() => setHistory({ lab, pc })}>History</button>}
+                        {(r || draftMap[`${lab}-${pc}`]) && user.role === "admin" && <button className="btn sm danger" onClick={() => resetComputer(lab, pc)}>Reset</button>}{/* [v3 NEW] */}
                       </td>
                     </tr>
                   );

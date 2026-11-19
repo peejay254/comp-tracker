@@ -1,7 +1,8 @@
-// [UPDATED FILE] Only change: the challenges.css import below.
+// [UPDATED FILE] v3: adds the layout-editor.css import.
 import "./tracker.css";
 import "./styles.css";
-import "./challenges.css"; // [NEW] styles for the Challenges editor
+import "./challenges.css"; // styles for the Challenges editor (previous update)
+import "./layout-editor.css"; // [v3 NEW] styles for the layout editor
 
 export const metadata = {
   title: "Computer Inspection Tracker",

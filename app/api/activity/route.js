@@ -13,7 +13,7 @@ export async function GET(req) {
   const events = [];
   for (const d of docs) {
     events.push({ type: "inspected", who: d.inspector, lab: d.lab, pc: d.pc, at: d.createdAt, ok: isHealthy(d) }); // [CHANGED]
-    if (d.deletedAt) events.push({ type: "deleted", who: d.deletedBy, by: d.inspector, lab: d.lab, pc: d.pc, at: d.deletedAt });
+    if (d.deletedAt) events.push({ type: d.deletedReason === "reset" ? "reset" : "deleted", who: d.deletedBy, by: d.inspector, lab: d.lab, pc: d.pc, at: d.deletedAt }); // [v3 CHANGED] admin resets
   }
   events.sort((a, b) => b.at.localeCompare(a.at));
   return json(events.slice(0, 100));

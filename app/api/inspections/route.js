@@ -2,7 +2,8 @@
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/lib/mongodb";
 import { fail, guard, json } from "@/lib/http";
-import { SOFTWARE } from "@/lib/layouts";
+import { LAB_IDS, SOFTWARE } from "@/lib/layouts";
+import { computersOf, getLab } from "@/lib/labs"; // [v3 NEW]
 import { cleanIssues, validateInspection } from "@/lib/validate"; // [CHANGED] cleanIssues added
 
 export const dynamic = "force-dynamic";
@@ -25,7 +26,9 @@ export async function POST(req) {
   const { user, res } = await guard(req, ["admin", "inspector"]);
   if (res) return res;
   const b = await req.json().catch(() => null);
-  const err = validateInspection(b);
+  const labId = Number(b?.lab); // [v3 CHANGED] validate against the lab's stored layout
+  const comps = LAB_IDS.includes(labId) ? computersOf(await getLab(labId)) : null;
+  const err = validateInspection(b, comps);
   if (err) return fail(err);
   const doc = {
     _id: randomUUID(), lab: Number(b.lab), pc: Number(b.pc), date: b.date,
